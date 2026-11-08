@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Sora Clock</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sora Clock">
+<meta name="theme-color" content="#000000">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+/* レイアウト：横向き1画面。左に大きな時計と3日予報、右に現在の天気カードと時間ごとの予報 */
+:root {
+  --bg: #000000;
+  --fg: #ffffff;
+  --fg-2: rgba(235, 235, 245, 0.62);
+  --fg-3: rgba(235, 235, 245, 0.34);
+  --card: rgba(118, 118, 128, 0.16);
+  --card-line: rgba(255, 255, 255, 0.07);
+  --glow: #1f4fd1;
+  --sun: #ffd60a;
+  --rain: #64d2ff;
+  --snow: #e5f4ff;
+  --bolt: #ffd60a;
+  --cloud: #e9eef7;
+  --font-num: ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", -apple-system, system-ui, sans-serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+/* 天気と時間帯で色が変わる、ぼんやりした光 */
+.glow {
+  position: fixed; inset: -20%;
+  background:
+    radial-gradient(40% 50% at 78% 30%, var(--glow), transparent 70%),
+    radial-gradient(35% 45% at 18% 85%, color-mix(in srgb, var(--glow) 55%, transparent), transparent 70%);
+  opacity: 0.38;
+  filter: blur(30px);
+  transition: background 2s ease, opacity 2s ease;
+  pointer-events: none;
+}
+@supports not (background: color-mix(in srgb, red 50%, blue)) {
+  .glow { background: radial-gradient(40% 50% at 78% 30%, var(--glow), transparent 70%); }
+}
+.app {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 3.2vw;
+  padding:
+    max(4vh, env(safe-area-inset-top, 0px))
+    max(4vw, env(safe-area-inset-right, 0px))
+    max(4vh, env(safe-area-inset-bottom, 0px))
+    max(4vw, env(safe-area-inset-left, 0px));
+  transition: opacity 1.5s ease, filter 1.5s ease;
+}
+body.night .app { opacity: 0.5; filter: saturate(0.6); }
+body.night .glow { opacity: 0.15; }
+
+/* ---- 左：時計 ---- */
+.clock {
+  display: flex; flex-direction: column; justify-content: center;
+  min-width: 0;
+}
+.date {
+  font-size: clamp(14px, 5.4vh, 30px);
+  font-weight: 600;
+  color: var(--fg-2);
+  letter-spacing: 0.02em;
+  padding-left: 0.3em;
+}
+.date .wd { color: #ff453a; margin-left: 0.4em; }
+.date .wd.sat { color: #64d2ff; }
+.date .wd.week { color: var(--fg-2); }
+.time {
+  display: flex; align-items: baseline;
+  font-family: var(--font-num);
+  font-weight: 600;
+  font-size: min(16.5vw, 40vh);
+  line-height: 0.95;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  margin: 0.5vh 0 0;
+  white-space: nowrap;
+}
+.time .colon {
+  display: inline-block;
+  margin: 0 0.02em;
+  transform: translateY(-0.06em);
+  color: var(--fg-2);
+  transition: opacity 0.35s ease;
+}
+.time .colon.dim { opacity: 0.25; }
+.time .sec {
+  font-size: 0.24em;
+  color: var(--fg-3);
+  margin-left: 0.25em;
+  letter-spacing: 0;
+}
+.days {
+  display: flex; flex-wrap: wrap; gap: 1.2vh 1.8vw;
+  margin-top: 4.5vh;
+  padding-left: 0.4em;
+}
+.day {
+  display: flex; align-items: center; gap: 0.4em;
+  font-size: clamp(11px, 3.9vh, 20px);
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.day .name { font-weight: 600; color: var(--fg); }
+.day svg { width: 1.6em; height: 1.6em; flex: none; }
+.day .hi { color: var(--fg); font-weight: 600; font-family: var(--font-num); }
+.day .lo { font-family: var(--font-num); color: var(--fg-3); }
+
+/* ---- 右：天気カード ---- */
+.weather {
+  align-self: center;
+  min-width: 0;
+  background: var(--card);
+  border: 1px solid var(--card-line);
+  border-radius: 28px;
+  padding: 3.6vh 2.4vw;
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  display: flex; flex-direction: column; gap: 2.4vh;
+}
+.place {
+  display: flex; align-items: center; gap: 0.35em;
+  font-size: clamp(12px, 3.9vh, 18px);
+  font-weight: 600;
+  color: var(--fg-2);
+}
+.place svg { width: 0.95em; height: 0.95em; fill: currentColor; }
+.now { display: flex; align-items: center; justify-content: space-between; gap: 1vw; }
+.now .temp {
+  font-family: var(--font-num);
+  font-size: min(9.5vw, 21vh);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.now .icon svg { width: min(10vw, 22vh); height: min(10vw, 22vh); display: block; }
+.cond { display: flex; flex-direction: column; gap: 0.3vh; }
+.cond .label { font-size: clamp(13px, 4.6vh, 22px); font-weight: 600; }
+.cond .meta {
+  display: flex; flex-wrap: wrap; gap: 0 0.9em;
+  font-size: clamp(11px, 3.5vh, 16px);
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+.hours {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-top: 1px solid var(--card-line);
+  padding-top: 2.2vh;
+  text-align: center;
+}
+.hour { display: flex; flex-direction: column; align-items: center; gap: 0.6vh; min-width: 0; }
+.hour .h { font-size: clamp(10px, 3.2vh, 14px); color: var(--fg-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.hour svg { width: min(4.6vw, 9.5vh); height: min(4.6vw, 9.5vh); }
+.hour .t { font-family: var(--font-num); font-size: clamp(12px, 4vh, 18px); font-weight: 600; font-variant-numeric: tabular-nums; }
+.hour .p { font-size: clamp(9px, 2.8vh, 12px); color: var(--rain); font-weight: 600; min-height: 1.2em; }
+.foot {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.2em 1em;
+  white-space: nowrap;
+  font-size: clamp(9px, 2.6vh, 11px);
+  color: var(--fg-3);
+}
+.foot a { color: inherit; text-decoration: none; }
+.msg {
+  font-size: clamp(11px, 3.4vh, 15px);
+  color: var(--fg-2);
+  line-height: 1.5;
+}
+.toast {
+  position: fixed; left: 50%; bottom: max(3vh, env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%) translateY(20px);
+  background: rgba(44, 44, 46, 0.92);
+  color: var(--fg);
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  opacity: 0;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* 縦向きでも崩れないように縦積みにする */
+@media (orientation: portrait) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto auto; align-content: center; gap: 4vh; }
+  .time { font-size: 24vw; }
+  .date, .day { font-size: 4.4vw; }
+  .days { gap: 4vw; }
+  .weather { padding: 3vh 5vw; }
+  .now .temp { font-size: 16vw; }
+  .now .icon svg { width: 18vw; height: 18vw; }
+  .hour svg { width: 9vw; height: 9vw; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .glow, .app, .time .colon { transition: none; }
+}
+</style>
+</head>
+<body>
+<div class="glow" aria-hidden="true"></div>
+<main class="app" id="app">
+  <section class="clock" aria-label="時計">
+    <div class="date" id="date">&nbsp;</div>
+    <div class="time" id="time" aria-live="off">
+      <span id="hh">--</span><span class="colon" id="colon">:</span><span id="mm">--</span><span class="sec" id="ss">--</span>
+    </div>
+    <div class="days" id="days"></div>
+  </section>
+
+  <section class="weather" aria-label="天気">
+    <div class="place" id="place">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3 3 10.5l7.5 2.9L13.5 21z"/></svg>
+      <span id="placeName">現在地</span>
+    </div>
+    <div class="now">
+      <div class="temp" id="temp">--°</div>
+      <div class="icon" id="nowIcon"></div>
+    </div>
+    <div class="cond">
+      <div class="label" id="condLabel">天気を取得しています</div>
+      <div class="meta" id="condMeta">&nbsp;</div>
+    </div>
+    <div class="hours" id="hours"></div>
+    <div class="foot">
+      <span id="updated">&nbsp;</span>
+      <a href="https://open-meteo.com/" target="_blank" rel="noopener">天気データ：Open-Meteo.com</a>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ===== 設定 =====
+  var REFRESH_MS = 15 * 60 * 1000;          // 天気の更新間隔（15分）
+  var NIGHT_FROM = 23, NIGHT_TO = 6;        // この時間帯は画面を暗めにする
+  var FALLBACK = { lat: 35.6812, lon: 139.7671, name: "東京（位置情報なし）" };
+  var WD = ["日", "月", "火", "水", "木", "金", "土"];
+
+  var $ = function (id) { return document.getElementById(id); };
+  var store = {
+    get: function (k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
+    set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  };
+  var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+
+  // ===== 時計 =====
+  function tick() {
+    var d = new Date();
+    $("hh").textContent = pad(d.getHours());
+    $("mm").textContent = pad(d.getMinutes());
+    $("ss").textContent = pad(d.getSeconds());
+    $("colon").classList.toggle("dim", d.getSeconds() % 2 === 1);
+    var wd = d.getDay();
+    var cls = wd === 0 ? "wd" : wd === 6 ? "wd sat" : "wd week";
+    $("date").innerHTML = (d.getMonth() + 1) + "月" + d.getDate() + "日<span class=\"" + cls + "\">" + WD[wd] + "曜日</span>";
+    var h = d.getHours();
+    document.body.classList.toggle("night", h >= NIGHT_FROM || h < NIGHT_TO);
+    setTimeout(tick, 1000 - d.getMilliseconds() + 5);
+  }
+
+  // ===== 天気アイコン（WMO天気コード → SVG） =====
+  var CLOUD = "M19 47h27a11 11 0 0 0 1-22 15 15 0 0 0-28.6-3.2A12.6 12.6 0 0 0 19 47z";
+  function sun(cx, cy, r) {
+    var rays = "";
+    for (var i = 0; i < 8; i++) {
+      var a = i * Math.PI / 4, x1 = cx + Math.cos(a) * (r + 5), y1 = cy + Math.sin(a) * (r + 5),
+          x2 = cx + Math.cos(a) * (r + 10), y2 = cy + Math.sin(a) * (r + 10);
+      rays += "<line x1='" + x1.toFixed(1) + "' y1='" + y1.toFixed(1) + "' x2='" + x2.toFixed(1) + "' y2='" + y2.toFixed(1) + "'/>";
+    }
+    return "<g stroke='var(--sun)' stroke-width='3.4' stroke-linecap='round'>" + rays + "</g><circle cx='" + cx + "' cy='" + cy + "' r='" + r + "' fill='var(--sun)'/>";
+  }
+  function moon(cx, cy, r) {
+    // 左に膨らむ三日月：外側は半円、内側は細い楕円弧
+    return "<path fill='#f2f2f7' d='M" + cx + " " + (cy - r) + "A" + r + " " + r + " 0 0 0 " + cx + " " + (cy + r) +
+      "A" + (r * 0.55) + " " + r + " 0 0 1 " + cx + " " + (cy - r) + "z' transform='translate(" + (r * 0.4) + " 0)'/>";
+  }
+  function cloud(dy, fill) {
+    return "<path transform='translate(0 " + dy + ")' fill='" + (fill || "var(--cloud)") + "' d='" + CLOUD + "'/>";
+  }
+  function drops(color, n) {
+    var s = "<g stroke='" + color + "' stroke-width='3.6' stroke-linecap='round'>";
+    var xs = n === 2 ? [26, 38] : [21, 32, 43];
+    xs.forEach(function (x) { s += "<line x1='" + x + "' y1='46' x2='" + (x - 3) + "' y2='56'/>"; });
+    return s + "</g>";
+  }
+  function flakes() {
+    var s = "<g fill='var(--snow)'>";
+    [[22, 50], [32, 56], [42, 50], [27, 59], [37, 61]].forEach(function (p) { s += "<circle cx='" + p[0] + "' cy='" + p[1] + "' r='2.6'/>"; });
+    return s + "</g>";
+  }
+  function svg(inner) { return "<svg viewBox='0 0 64 64' aria-hidden='true'>" + inner + "</svg>"; }
+
+  function weatherInfo(code, isDay) {
+    var day = isDay !== 0;
+    var orb = day ? sun(22, 22, 9) : moon(22, 22, 10);
+    var dimCloud = "#aeb6c4";
+    switch (code) {
+      case 0: return { label: day ? "快晴" : "晴れ", icon: svg(day ? sun(32, 32, 12) : moon(32, 32, 15)), tone: day ? "clear" : "night" };
+      case 1: return { label: "晴れ", icon: svg(orb + "<path transform='translate(6 6) scale(.8)' fill='var(--cloud)' d='" + CLOUD + "'/>"), tone: day ? "clear" : "night" };
+      case 2: return { label: "晴れ時々くもり", icon: svg(orb + cloud(4)), tone: day ? "cloud" : "night" };
+      case 3: return { label: "くもり", icon: svg(cloud(-2, dimCloud) ), tone: "cloud" };
+      case 45: case 48: return { label: "霧", icon: svg("<g stroke='var(--cloud)' stroke-width='3.6' stroke-linecap='round'><line x1='12' y1='24' x2='52' y2='24'/><line x1='8' y1='33' x2='48' y2='33'/><line x1='16' y1='42' x2='56' y2='42'/><line x1='12' y1='51' x2='44' y2='51'/></g>"), tone: "cloud" };
+      case 51: case 53: case 55: return { label: "霧雨", icon: svg(cloud(-8, dimCloud) + drops("var(--rain)", 2)), tone: "rain" };
+      case 56: case 57: return { label: "着氷性の霧雨", icon: svg(cloud(-8, dimCloud) + drops("var(--snow)", 2)), tone: "rain" };
+      case 61: return { label: "小雨", icon: svg(cloud(-8, dimCloud) + drops("var(--rain)", 2)), tone: "rain" };
+      case 63: return { label: "雨", icon: svg(cloud(-8, dimCloud) + drops("var(--rain)", 3)), tone: "rain" };
+      case 65: return { label: "強い雨", icon: svg(cloud(-8, "#8e96a4") + drops("var(--rain)", 3)), tone: "rain" };
+      case 66: case 67: return { label: "着氷性の雨", icon: svg(cloud(-8, dimCloud) + drops("var(--snow)", 3)), tone: "rain" };
+      case 71: return { label: "小雪", icon: svg(cloud(-8) + flakes()), tone: "snow" };
+      case 73: return { label: "雪", icon: svg(cloud(-8) + flakes()), tone: "snow" };
+      case 75: return { label: "大雪", icon: svg(cloud(-8) + flakes()), tone: "snow" };
+      case 77: return { label: "霧雪", icon: svg(cloud(-8) + flakes()), tone: "snow" };
+      case 80: case 81: return { label: "にわか雨", icon: svg(orb + cloud(-4) + drops("var(--rain)", 2)), tone: "rain" };
+      case 82: return { label: "激しいにわか雨", icon: svg(cloud(-8, "#8e96a4") + drops("var(--rain)", 3)), tone: "rain" };
+      case 85: case 86: return { label: "にわか雪", icon: svg(orb + cloud(-4) + flakes()), tone: "snow" };
+      case 95: return { label: "雷雨", icon: svg(cloud(-8, "#8e96a4") + "<path fill='var(--bolt)' d='M34 40 24 54h8l-3 9 12-15h-8l3-8z'/>"), tone: "storm" };
+      case 96: case 99: return { label: "雷雨（ひょう）", icon: svg(cloud(-8, "#8e96a4") + "<path fill='var(--bolt)' d='M34 40 24 54h8l-3 9 12-15h-8l3-8z'/>"), tone: "storm" };
+      default: return { label: "—", icon: svg(cloud(0)), tone: "cloud" };
+    }
+  }
+  var GLOW = { clear: "#1e6bff", cloud: "#3a4a66", rain: "#0f6f8f", snow: "#6f8fb8", storm: "#4b2f8f", night: "#2a2a8a" };
+
+  // ===== 位置情報 =====
+  function getPosition() {
+    return new Promise(function (resolve) {
+      var cached = store.get("sora.pos");
+      if (!("geolocation" in navigator)) { resolve(cached || FALLBACK); return; }
+      navigator.geolocation.getCurrentPosition(function (p) {
+        var pos = { lat: +p.coords.latitude.toFixed(3), lon: +p.coords.longitude.toFixed(3), name: "現在地" };
+        store.set("sora.pos", pos);
+        resolve(pos);
+      }, function () {
+        resolve(cached || FALLBACK);
+      }, { enableHighAccuracy: false, timeout: 15000, maximumAge: 30 * 60 * 1000 });
+    });
+  }
+
+  // ===== 天気の取得 =====
+  function apiUrl(pos) {
+    return "https://api.open-meteo.com/v1/forecast?latitude=" + pos.lat + "&longitude=" + pos.lon +
+      "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,is_day" +
+      "&hourly=temperature_2m,weather_code,precipitation_probability,is_day" +
+      "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
+      "&timezone=auto&forecast_days=4";
+  }
+
+  var lastFetch = 0, loading = false;
+  function refresh(force) {
+    if (loading) return;
+    if (!force && Date.now() - lastFetch < 60 * 1000) return;
+    loading = true;
+    getPosition().then(function (pos) {
+      return fetch(apiUrl(pos), { cache: "no-store" }).then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      }).then(function (data) {
+        data._place = pos.name;
+        data._fetched = Date.now();
+        store.set("sora.weather", data);
+        lastFetch = Date.now();
+        render(data, false);
+      });
+    }).catch(function () {
+      var cached = store.get("sora.weather");
+      if (cached) render(cached, true);
+      else {
+        $("condLabel").textContent = "天気を取得できません";
+        $("condMeta").textContent = "通信を確認してください。画面をタップすると再試行します";
+      }
+    }).then(function () { loading = false; });
+  }
+
+  function render(d, stale) {
+    var c = d.current;
+    var info = weatherInfo(c.weather_code, c.is_day);
+    var round = function (v) { return v == null ? "--" : Math.round(v); };
+
+    $("placeName").textContent = d._place || "現在地";
+    $("temp").textContent = round(c.temperature_2m) + "°";
+    $("nowIcon").innerHTML = info.icon;
+    $("condLabel").textContent = info.label;
+    var dl = d.daily;
+    $("condMeta").innerHTML = "<span>最高 " + round(dl.temperature_2m_max[0]) + "° / 最低 " + round(dl.temperature_2m_min[0]) +
+      "°</span><span>体感 " + round(c.apparent_temperature) + "°・湿度 " + round(c.relative_humidity_2m) + "%</span>";
+    document.documentElement.style.setProperty("--glow", GLOW[info.tone] || GLOW.cloud);
+
+    // 時間ごとの予報（次の時刻から5つ）
+    var h = d.hourly, nowKey = c.time.slice(0, 13), start = 0;
+    for (var i = 0; i < h.time.length; i++) { if (h.time[i].slice(0, 13) === nowKey) { start = i + 1; break; } }
+    var html = "";
+    for (var j = start; j < Math.min(start + 5, h.time.length); j++) {
+      var hi = weatherInfo(h.weather_code[j], h.is_day[j]);
+      var pp = h.precipitation_probability ? h.precipitation_probability[j] : null;
+      html += "<div class='hour'><div class='h'>" + parseInt(h.time[j].slice(11, 13), 10) + "時</div>" + hi.icon +
+        "<div class='t'>" + round(h.temperature_2m[j]) + "°</div><div class='p'>" + (pp != null && pp >= 20 ? pp + "%" : "") + "</div></div>";
+    }
+    $("hours").innerHTML = html;
+
+    // 明日から3日間
+    var dhtml = "";
+    for (var k = 1; k <= 3 && k < dl.time.length; k++) {
+      var p = dl.time[k].split("-"), dd = new Date(+p[0], +p[1] - 1, +p[2]);
+      var di = weatherInfo(dl.weather_code[k], 1);
+      dhtml += "<div class='day'><span class='name'>" + (k === 1 ? "明日" : WD[dd.getDay()]) + "</span>" + di.icon +
+        "<span class='hi'>" + round(dl.temperature_2m_max[k]) + "°</span><span class='lo'>" + round(dl.temperature_2m_min[k]) + "°</span></div>";
+    }
+    $("days").innerHTML = dhtml;
+
+    var t = new Date(d._fetched || Date.now());
+    $("updated").textContent = (stale ? "オフライン・" : "") + t.getHours() + ":" + pad(t.getMinutes()) + " 更新";
+  }
+
+  // ===== 画面を消さない（対応環境のみ） =====
+  var wakeLock = null;
+  function requestWake() {
+    if (!("wakeLock" in navigator) || wakeLock) return;
+    navigator.wakeLock.request("screen").then(function (lock) {
+      wakeLock = lock;
+      lock.addEventListener("release", function () { wakeLock = null; });
+    }).catch(function () { /* 非対応・拒否は無視（自動ロック「なし」で運用） */ });
+  }
+
+  // ===== トースト =====
+  var toastTimer;
+  function toast(text) {
+    var el = $("toast");
+    el.textContent = text;
+    el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.remove("show"); }, 2200);
+  }
+
+  // ===== 起動 =====
+  tick();
+  var cached = store.get("sora.weather");
+  if (cached) render(cached, true);
+  refresh(true);
+  requestWake();
+  setInterval(function () { refresh(true); }, REFRESH_MS);
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") {
+      requestWake();
+      if (Date.now() - lastFetch > 10 * 60 * 1000) refresh(true);
+    }
+  });
+  document.addEventListener("click", function () {
+    requestWake();
+    toast("天気を更新しています");
+    refresh(false);
+  });
+})();
+</script>
+</body>
+</html>
