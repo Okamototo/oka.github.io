@@ -15,11 +15,11 @@
 :root {
   --bg: #000000;
   --fg: #ffffff;
-  --fg-2: rgba(235, 235, 245, 0.62);
-  --fg-3: rgba(235, 235, 245, 0.34);
-  --card: rgba(118, 118, 128, 0.16);
-  --card-line: rgba(255, 255, 255, 0.07);
-  --glow: #1f4fd1;
+  --fg-2: rgba(255, 255, 255, 0.78);
+  --fg-3: rgba(255, 255, 255, 0.55);
+  --card: rgba(8, 18, 44, 0.20);
+  --card-line: rgba(255, 255, 255, 0.16);
+  --shadow: 0 1px 14px rgba(0, 10, 40, 0.22);
   --sun: #ffd60a;
   --rain: #64d2ff;
   --snow: #e5f4ff;
@@ -41,20 +41,19 @@ body {
   -webkit-tap-highlight-color: transparent;
   -webkit-text-size-adjust: 100%;
 }
-/* 天気と時間帯で色が変わる、ぼんやりした光 */
-.glow {
-  position: fixed; inset: -20%;
-  background:
-    radial-gradient(40% 50% at 78% 30%, var(--glow), transparent 70%),
-    radial-gradient(35% 45% at 18% 85%, color-mix(in srgb, var(--glow) 55%, transparent), transparent 70%);
-  opacity: 0.38;
-  filter: blur(30px);
-  transition: background 2s ease, opacity 2s ease;
-  pointer-events: none;
+/* ---- 背景：空のグラデーション（2枚を重ねてフェード）＋ 雲・雨・雪・星を描くキャンバス ---- */
+.sky { position: fixed; inset: 0; pointer-events: none; }
+.sky-grad { position: absolute; inset: 0; transition: opacity 3s ease; }
+#skyB { opacity: 0; }
+#fx { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* 時計の周りだけ、わずかに暗くして文字を読みやすくする */
+.scrim {
+  position: absolute; inset: 0;
+  background: radial-gradient(60% 70% at 28% 50%, rgba(0, 12, 40, var(--scrim, 0.12)), transparent 75%);
+  transition: opacity 3s ease;
 }
-@supports not (background: color-mix(in srgb, red 50%, blue)) {
-  .glow { background: radial-gradient(40% 50% at 78% 30%, var(--glow), transparent 70%); }
-}
+.sky { transition: opacity 1.5s ease; }
+body.night .sky { opacity: 0.75; }
 .app {
   position: relative;
   height: 100%;
@@ -68,8 +67,8 @@ body {
     max(4vw, env(safe-area-inset-left, 0px));
   transition: opacity 1.5s ease, filter 1.5s ease;
 }
-body.night .app { opacity: 0.5; filter: saturate(0.6); }
-body.night .glow { opacity: 0.15; }
+body.night .app { opacity: 0.55; filter: saturate(0.6); }
+.app { text-shadow: var(--shadow); }
 
 /* ---- 左：時計 ---- */
 .clock {
@@ -136,8 +135,9 @@ body.night .glow { opacity: 0.15; }
   border: 1px solid var(--card-line);
   border-radius: 28px;
   padding: 3.6vh 2.4vw;
-  -webkit-backdrop-filter: blur(20px);
-  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  backdrop-filter: blur(24px) saturate(1.3);
+  text-shadow: none;
   display: flex; flex-direction: column; gap: 2.4vh;
 }
 .place {
@@ -215,12 +215,17 @@ body.night .glow { opacity: 0.15; }
   .hour svg { width: 9vw; height: 9vw; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .glow, .app, .time .colon { transition: none; }
+  .sky, .sky-grad, .app, .time .colon { transition: none; }
 }
 </style>
 </head>
 <body>
-<div class="glow" aria-hidden="true"></div>
+<div class="sky" aria-hidden="true">
+  <div class="sky-grad" id="skyA"></div>
+  <div class="sky-grad" id="skyB"></div>
+  <canvas id="fx"></canvas>
+  <div class="scrim"></div>
+</div>
 <main class="app" id="app">
   <section class="clock" aria-label="時計">
     <div class="date" id="date">&nbsp;</div>
@@ -251,6 +256,406 @@ body.night .glow { opacity: 0.15; }
   </section>
 </main>
 <div class="toast" id="toast" role="status"></div>
+
+<script>
+/* ===== 背景の空（時間帯 × 天気）=====
+   時間帯は日の出・日の入りの時刻から決める。天気はWMO天気コードを7種類にまとめる。
+   確認用：URL末尾に ?t=17:00&w=3 のように付けると、その時刻と天気コードで背景を表示する。 */
+var Sky = (function () {
+  "use strict";
+
+  var params = new URLSearchParams(location.search);
+  var FORCE_T = params.get("t");                 // "HH:MM"
+  var FORCE_W = params.has("w") ? +params.get("w") : null;
+  var REDUCED = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---------- 色ユーティリティ ----------
+  function hex(h) { h = h.replace("#", ""); return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]; }
+  function mix(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+  function rgba(c, a) { return "rgba(" + (c[0] | 0) + "," + (c[1] | 0) + "," + (c[2] | 0) + "," + (a == null ? 1 : a) + ")"; }
+  function lum(c) { return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; }
+
+  // ---------- 時間帯のキーフレーム（晴天時の空）----------
+  // ref: S=日の出, E=日の入り, N=南中（その中間） / m: 基準からの分
+  // top/mid/bot: 空の上・中・地平線 / cl,cs: 雲の明るい面・影の面 / glow: 太陽（月）の光 / ga: 光の強さ / st: 星の見え方
+  var KEYS = [
+    { ref: "S", m: -100, top: "#03050d", mid: "#08102a", bot: "#141c3c", cl: "#3a4565", cs: "#151b2e", glow: "#8fa3ff", ga: 0.10, st: 1 },
+    { ref: "S", m: -45,  top: "#0a1230", mid: "#28305e", bot: "#6a4f7c", cl: "#7a6f99", cs: "#2a2b4d", glow: "#ff9e80", ga: 0.25, st: 0.5 },
+    { ref: "S", m: 0,    top: "#28488a", mid: "#8a80b0", bot: "#f5a98a", cl: "#ffc6b8", cs: "#7a7aa6", glow: "#ffb48a", ga: 0.65, st: 0 },
+    { ref: "S", m: 45,   top: "#3a79d4", mid: "#7fb3ea", bot: "#f6d4ac", cl: "#fff1e2", cs: "#a9b6cf", glow: "#fff0c8", ga: 0.55, st: 0 },
+    { ref: "S", m: 150,  top: "#2b7fe2", mid: "#5eaaf2", bot: "#aedcfb", cl: "#ffffff", cs: "#c2d0e2", glow: "#fffbe8", ga: 0.45, st: 0 },
+    { ref: "N", m: 0,    top: "#1d6bd6", mid: "#4b97e8", bot: "#8ec6f3", cl: "#ffffff", cs: "#c3cfde", glow: "#ffffff", ga: 0.40, st: 0 },
+    { ref: "E", m: -120, top: "#2470d4", mid: "#5a9de4", bot: "#a4cdef", cl: "#ffffff", cs: "#c0cbdc", glow: "#fff6dc", ga: 0.42, st: 0 },
+    { ref: "E", m: -55,  top: "#3466b0", mid: "#a5b3c9", bot: "#f6c27c", cl: "#ffe0b0", cs: "#9a93a8", glow: "#ffc874", ga: 0.65, st: 0 },
+    { ref: "E", m: 0,    top: "#2a3c78", mid: "#b06878", bot: "#ff8748", cl: "#ffb487", cs: "#7c5f86", glow: "#ff8a4a", ga: 0.85, st: 0 },
+    { ref: "E", m: 25,   top: "#1a2354", mid: "#5a3e70", bot: "#d86a52", cl: "#d98a8c", cs: "#45395f", glow: "#ff7a50", ga: 0.45, st: 0.15 },
+    { ref: "E", m: 60,   top: "#0b1232", mid: "#232858", bot: "#4a3862", cl: "#5f5880", cs: "#1f2140", glow: "#a08cff", ga: 0.15, st: 0.6 },
+    { ref: "E", m: 110,  top: "#03050d", mid: "#08102a", bot: "#141c3c", cl: "#3a4565", cs: "#151b2e", glow: "#8fa3ff", ga: 0.10, st: 1 }
+  ].map(function (k) {
+    return { ref: k.ref, m: k.m, top: hex(k.top), mid: hex(k.mid), bot: hex(k.bot), cl: hex(k.cl), cs: hex(k.cs), glow: hex(k.glow), ga: k.ga, st: k.st };
+  });
+
+  // ---------- 天気の種類 ----------
+  // cover: 雲の量 / grey: 空の灰色化 / dark: 暗さ(1=そのまま) / precip: 降水
+  var KINDS = {
+    clear:   { cover: 0,    grey: 0,    dark: 1,    clouds: 0,  precip: null },
+    few:     { cover: 0.15, grey: 0.04, dark: 1,    clouds: 3,  precip: null },
+    partly:  { cover: 0.4,  grey: 0.12, dark: 0.98, clouds: 6,  precip: null },
+    overcast:{ cover: 0.9,  grey: 0.55, dark: 0.88, clouds: 11, precip: null },
+    fog:     { cover: 0.7,  grey: 0.7,  dark: 0.9,  clouds: 3,  precip: "fog" },
+    drizzle: { cover: 0.95, grey: 0.62, dark: 0.78, clouds: 11, precip: "rain", amount: 70 },
+    rain:    { cover: 1,    grey: 0.66, dark: 0.72, clouds: 12, precip: "rain", amount: 150 },
+    heavy:   { cover: 1,    grey: 0.72, dark: 0.6,  clouds: 13, precip: "rain", amount: 280 },
+    snow:    { cover: 0.95, grey: 0.7,  dark: 0.9,  clouds: 11, precip: "snow", amount: 140 },
+    storm:   { cover: 1,    grey: 0.75, dark: 0.5,  clouds: 13, precip: "rain", amount: 260, bolt: true }
+  };
+  function kindOf(code) {
+    if (code === 0) return "clear";
+    if (code === 1) return "few";
+    if (code === 2) return "partly";
+    if (code === 3) return "overcast";
+    if (code === 45 || code === 48) return "fog";
+    if (code >= 51 && code <= 57) return "drizzle";
+    if (code === 61 || code === 80 || code === 66) return "drizzle";
+    if (code === 63 || code === 81 || code === 67) return "rain";
+    if (code === 65 || code === 82) return "heavy";
+    if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "snow";
+    if (code >= 95) return "storm";
+    return "partly";
+  }
+
+  // ---------- 状態 ----------
+  var state = { code: FORCE_W != null ? FORCE_W : 0, sunrise: 6 * 60, sunset: 17 * 60 + 30, pal: null, kind: KINDS.clear };
+
+  function minutesOf(iso) { // "2026-11-09T06:12" → 372
+    if (!iso) return null;
+    var t = iso.split("T")[1]; if (!t) return null;
+    return +t.slice(0, 2) * 60 + +t.slice(3, 5);
+  }
+  function nowMinutes() {
+    if (FORCE_T) { var p = FORCE_T.split(":"); return +p[0] * 60 + (+p[1] || 0); }
+    var d = new Date(); return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+  }
+
+  // キーフレームを補間して、その時刻の晴天パレットを作る
+  function clearPalette(t) {
+    var S = state.sunrise, E = state.sunset, N = (S + E) / 2;
+    var abs = KEYS.map(function (k) { return { at: (k.ref === "S" ? S : k.ref === "E" ? E : N) + k.m, k: k }; });
+    // 日付をまたぐ夜をつなぐ
+    var first = abs[0], last = abs[abs.length - 1];
+    if (t < first.at) t += 1440;
+    abs.push({ at: first.at + 1440, k: first.k });
+    for (var i = 0; i < abs.length - 1; i++) {
+      var a = abs[i], b = abs[i + 1];
+      if (t >= a.at && t <= b.at) {
+        var f = (t - a.at) / Math.max(1, b.at - a.at);
+        f = f * f * (3 - 2 * f); // なめらかに
+        return {
+          top: mix(a.k.top, b.k.top, f), mid: mix(a.k.mid, b.k.mid, f), bot: mix(a.k.bot, b.k.bot, f),
+          cl: mix(a.k.cl, b.k.cl, f), cs: mix(a.k.cs, b.k.cs, f), glow: mix(a.k.glow, b.k.glow, f),
+          ga: a.k.ga + (b.k.ga - a.k.ga) * f, st: a.k.st + (b.k.st - a.k.st) * f
+        };
+      }
+    }
+    return clearPalette(last.at - 1);
+  }
+
+  // 天気で空を曇らせる（灰色に寄せて、暗くする）
+  function weatherPalette(p, kd) {
+    // 朝焼け・夕焼けの時間は、曇っていても色を残す（雲が夕日に照らされて見えるように）
+    var warm = Math.max(0, Math.min(1, (p.ga - 0.5) / 0.35));
+    var grey = kd.grey * (1 - 0.55 * warm);
+    function wx(c, extra) {
+      var l = lum(c), g = [l * 0.97, l * 0.99, l * 1.04];
+      var out = mix(c, g, grey * (extra || 1));
+      return [Math.min(255, out[0] * kd.dark), Math.min(255, out[1] * kd.dark), Math.min(255, out[2] * kd.dark)];
+    }
+    return {
+      top: wx(p.top), mid: wx(p.mid, 0.9), bot: wx(p.bot, 0.75),     // 地平線側は夕焼けの色を少し残す
+      cl: wx(p.cl, 0.45 - 0.3 * warm), cs: wx(p.cs, 0.8),
+      glow: p.glow, ga: p.ga * (1 - kd.cover * (0.75 - 0.35 * warm)), st: p.st * (1 - kd.cover),
+      warm: warm,
+      kd: kd
+    };
+  }
+
+  // 太陽（月）の位置：日の出に左下、南中で上、日の入りに右下
+  function sunPos(t) {
+    var S = state.sunrise, E = state.sunset;
+    var f = (t - S) / (E - S);
+    if (f < -0.25 || f > 1.25) { // 夜は月を右上に
+      return { x: 0.78, y: 0.16 };
+    }
+    var c = Math.max(-0.08, Math.min(1.08, f));
+    return { x: 0.1 + 0.8 * c, y: 0.92 - 0.78 * Math.sin(Math.PI * Math.max(0, Math.min(1, c))) };
+  }
+
+  // ---------- 空のグラデーション（2枚を交互にフェード）----------
+  var gradA = document.getElementById("skyA"), gradB = document.getElementById("skyB");
+  function gradCss(p) {
+    return "linear-gradient(180deg," + rgba(p.top) + " 0%," + rgba(p.mid) + " 58%," + rgba(p.bot) + " 100%)";
+  }
+  // 下の層(A)が常に今の空。天気が変わった時だけ上の層(B)に新しい空を描いてフェードインし、終わったらAへ移す
+  var fadeTimer = null;
+  function paintGradient(p, fade) {
+    var css = gradCss(p);
+    if (!fade || REDUCED) { if (!fadeTimer) gradA.style.background = css; else pendingCss = css; return; }
+    clearTimeout(fadeTimer);
+    gradB.style.transition = "none"; gradB.style.opacity = 0; gradB.style.background = css;
+    void gradB.offsetWidth;
+    gradB.style.transition = ""; gradB.style.opacity = 1;
+    pendingCss = css;
+    fadeTimer = setTimeout(function () {
+      gradA.style.background = pendingCss;
+      gradB.style.transition = "none"; gradB.style.opacity = 0;
+      fadeTimer = null;
+    }, 3100);
+  }
+  var pendingCss = "";
+
+  // ---------- キャンバス（雲・雨・雪・星・光）----------
+  var cv = document.getElementById("fx"), ctx = cv.getContext("2d");
+  var W = 0, H = 0, SCALE = Math.min(window.devicePixelRatio || 1, 1.5);
+  function resize() {
+    W = Math.round(innerWidth * SCALE); H = Math.round(innerHeight * SCALE);
+    cv.width = W; cv.height = H;
+    buildScene();
+  }
+
+  function rand(a, b) { return a + Math.random() * (b - a); }
+
+  // 雲の画像を1枚作る：やわらかい丸を重ねて形を作り、上を明るく下を影色で塗る
+  function cloudSprite(w, h, p, sx, puffs) {
+    var c = document.createElement("canvas");
+    c.width = Math.max(4, w | 0); c.height = Math.max(4, h | 0);
+    var g = c.getContext("2d");
+    for (var i = 0; i < puffs; i++) {
+      var u = Math.random();
+      var cx = w * (0.12 + 0.76 * u);
+      var hump = Math.sin(Math.PI * u);                 // 真ん中ほど高く大きい
+      var r = h * (0.18 + 0.3 * hump) * rand(0.75, 1.15);
+      var cy = h * (0.72 - 0.32 * hump * rand(0.6, 1));
+      var rg = g.createRadialGradient(cx, cy, r * 0.15, cx, cy, r);
+      rg.addColorStop(0, "rgba(255,255,255,0.95)");
+      rg.addColorStop(0.55, "rgba(255,255,255,0.75)");
+      rg.addColorStop(1, "rgba(255,255,255,0)");
+      g.fillStyle = rg;
+      g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
+    }
+    // 形に色をのせる（上が光の色、下が影の色）
+    g.globalCompositeOperation = "source-in";
+    var lg = g.createLinearGradient(0, 0, 0, h);
+    lg.addColorStop(0, rgba(p.cl));
+    lg.addColorStop(0.55, rgba(mix(p.cl, p.cs, 0.45)));
+    lg.addColorStop(1, rgba(p.cs));
+    g.fillStyle = lg; g.fillRect(0, 0, w, h);
+    // 太陽側をほんのり照らす（夕焼け・朝焼けで効く）
+    g.globalCompositeOperation = "source-atop";
+    var hx = sx < 0.5 ? 0 : w;
+    var hg = g.createRadialGradient(hx, h * 0.6, 0, hx, h * 0.6, w * 0.9);
+    hg.addColorStop(0, rgba(p.glow, (0.35 + 0.35 * (p.warm || 0)) * Math.min(1, p.ga * 1.6)));
+    hg.addColorStop(1, rgba(p.glow, 0));
+    g.fillStyle = hg; g.fillRect(0, 0, w, h);
+    if (p.warm > 0.05) { // 低い太陽が雲の底を染める
+      var bg = g.createLinearGradient(0, h * 0.45, 0, h);
+      bg.addColorStop(0, rgba(p.glow, 0));
+      bg.addColorStop(1, rgba(p.glow, 0.45 * p.warm));
+      g.fillStyle = bg; g.fillRect(0, 0, w, h);
+    }
+    return c;
+  }
+
+  var clouds = [], drops = [], flakes = [], stars = [], fogs = [], flash = 0, nextBolt = 0, sun = { x: 0.5, y: 0.3 };
+
+  function buildScene() {
+    if (!state.pal || !W) return;
+    var p = state.pal, kd = p.kd;
+    sun = sunPos(nowMinutes());
+
+    // 雲：奥・中・手前の3層。曇り・雨は大きな雲で空をおおう
+    clouds = [];
+    var n = kd.clouds;
+    for (var i = 0; i < n; i++) {
+      var layer = i % 3;                                  // 0=奥 1=中 2=手前
+      var big = kd.cover > 0.6;
+      var w = W * (big ? rand(0.55, 1.0) : rand(0.28, 0.5)) * (0.75 + layer * 0.15);
+      var h = w * rand(0.32, 0.45);
+      var spr = cloudSprite(w, h, p, sun.x, big ? 26 : 18);
+      clouds.push({
+        img: spr, w: w, h: h,
+        x: rand(-w * 0.5, W),
+        y: (big ? rand(-0.2, 0.55) : rand(0.02, 0.5)) * H - h * 0.3 + layer * H * 0.04,
+        v: (4 + layer * 4) * SCALE * rand(0.8, 1.2),       // 1秒あたりの移動量
+        a: big ? rand(0.75, 0.95) : rand(0.8, 1)
+      });
+    }
+    clouds.sort(function (a, b) { return a.v - b.v; });
+
+    // 星
+    stars = [];
+    if (p.st > 0.02) {
+      for (var s = 0; s < 140; s++) stars.push({ x: Math.random() * W, y: Math.random() * H * 0.75, r: rand(0.4, 1.3) * SCALE, ph: Math.random() * 6.28, sp: rand(0.6, 1.8) });
+    }
+
+    // 雨・雪
+    drops = []; flakes = [];
+    var amount = kd.amount ? Math.round(kd.amount * (W * H) / (1104 * 621)) : 0;
+    if (kd.precip === "rain") for (var d = 0; d < amount; d++) drops.push(newDrop(true));
+    if (kd.precip === "snow") for (var f = 0; f < amount; f++) flakes.push(newFlake(true));
+
+    // 霧
+    fogs = [];
+    if (kd.precip === "fog") for (var k = 0; k < 6; k++) fogs.push({ y: H * rand(0.25, 0.95), h: H * rand(0.18, 0.35), x: rand(0, W), v: rand(5, 12) * SCALE, a: rand(0.25, 0.45) });
+
+    nextBolt = performance.now() + rand(4000, 9000);
+  }
+  function newDrop(anyY) {
+    var z = Math.random();
+    return { x: rand(-W * 0.1, W), y: anyY ? rand(-H, H) : rand(-H * 0.3, -10), l: (10 + z * 18) * SCALE, v: (650 + z * 600) * SCALE, a: 0.18 + z * 0.35, w: (0.7 + z * 0.9) * SCALE };
+  }
+  function newFlake(anyY) {
+    var z = Math.random();
+    return { x: Math.random() * W, y: anyY ? Math.random() * H : -10, r: (1 + z * 2.6) * SCALE, v: (25 + z * 55) * SCALE, a: 0.5 + z * 0.45, ph: Math.random() * 6.28, sw: rand(0.4, 1.2) };
+  }
+
+  // ---------- 描画ループ（最大30fps）----------
+  var last = 0, running = false;
+  function frame(now) {
+    if (!running) return;
+    requestAnimationFrame(frame);
+    if (now - last < 33) return;
+    var dt = Math.min(0.1, (now - last) / 1000); last = now;
+    draw(dt, now);
+  }
+
+  function draw(dt, now) {
+    var p = state.pal; if (!p) return;
+    var kd = p.kd;
+    ctx.clearRect(0, 0, W, H);
+
+    // 星（雲より奥）
+    if (stars.length) {
+      ctx.fillStyle = "#ffffff";
+      for (var i = 0; i < stars.length; i++) {
+        var s = stars[i];
+        ctx.globalAlpha = p.st * (0.45 + 0.55 * Math.sin(now / 1000 * s.sp + s.ph) * 0.5 + 0.275);
+        ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.283); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // 太陽・月の光
+    var gx = sun.x * W, gy = sun.y * H, gr = Math.max(W, H) * 0.55;
+    var g = ctx.createRadialGradient(gx, gy, 0, gx, gy, gr);
+    g.addColorStop(0, rgba(p.glow, Math.min(0.85, p.ga)));
+    g.addColorStop(0.18, rgba(p.glow, p.ga * 0.45));
+    g.addColorStop(1, rgba(p.glow, 0));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    // 雲
+    for (var c = 0; c < clouds.length; c++) {
+      var cl = clouds[c];
+      cl.x += cl.v * dt;
+      if (cl.x > W) cl.x = -cl.w;
+      ctx.globalAlpha = cl.a;
+      ctx.drawImage(cl.img, cl.x, cl.y, cl.w, cl.h);
+    }
+    ctx.globalAlpha = 1;
+
+    // 霧
+    for (var f = 0; f < fogs.length; f++) {
+      var fg = fogs[f];
+      fg.x += fg.v * dt; if (fg.x > W) fg.x -= W * 2;
+      var lg = ctx.createLinearGradient(0, fg.y - fg.h / 2, 0, fg.y + fg.h / 2);
+      lg.addColorStop(0, rgba(p.cl, 0)); lg.addColorStop(0.5, rgba(p.cl, fg.a)); lg.addColorStop(1, rgba(p.cl, 0));
+      ctx.fillStyle = lg;
+      ctx.fillRect(fg.x - W, fg.y - fg.h / 2, W * 2, fg.h);
+    }
+
+    // 雨
+    if (drops.length) {
+      ctx.strokeStyle = "rgb(205,222,245)"; ctx.lineCap = "round";
+      for (var d = 0; d < drops.length; d++) {
+        var r = drops[d];
+        r.y += r.v * dt; r.x += r.v * dt * 0.12;
+        if (r.y > H + r.l) { drops[d] = newDrop(false); continue; }
+        ctx.globalAlpha = r.a; ctx.lineWidth = r.w;
+        ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(r.x - r.l * 0.12, r.y - r.l); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // 雪
+    if (flakes.length) {
+      ctx.fillStyle = "#ffffff";
+      for (var k = 0; k < flakes.length; k++) {
+        var fl = flakes[k];
+        fl.y += fl.v * dt; fl.x += Math.sin(now / 1000 * fl.sw + fl.ph) * 12 * SCALE * dt;
+        if (fl.y > H + 5) { flakes[k] = newFlake(false); continue; }
+        ctx.globalAlpha = fl.a;
+        ctx.beginPath(); ctx.arc(fl.x, fl.y, fl.r, 0, 6.283); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // 雷
+    if (kd.bolt && !REDUCED) {
+      if (now > nextBolt) { flash = 1; nextBolt = now + rand(5000, 14000); if (Math.random() < 0.5) setTimeout(function () { flash = 0.8; }, 180); }
+      if (flash > 0.01) {
+        ctx.fillStyle = "rgba(220,230,255," + (flash * 0.55) + ")"; ctx.fillRect(0, 0, W, H);
+        flash *= 0.82;
+      }
+    }
+  }
+
+  // ---------- 更新 ----------
+  var lastKey = "";
+  function update(force) {
+    var t = nowMinutes();
+    var kd = KINDS[kindOf(state.code)];
+    var pal = weatherPalette(clearPalette(t), kd);
+    var key = kindOf(state.code);
+    var kindChanged = key !== lastKey;
+    state.pal = pal; state.kind = kd;
+    paintGradient(pal, kindChanged && lastKey !== "");
+    // 文字の下に敷く影の濃さ：空が明るいほど濃く
+    var bright = lum(pal.mid) / 255;
+    document.documentElement.style.setProperty("--scrim", (0.05 + bright * 0.22).toFixed(3));
+    if (force || kindChanged) buildScene();
+    else {
+      // 時間の変化で雲の色・太陽の位置を少しずつ合わせる（5分ごとに作り直す）
+      var p = sunPos(t); sun = p;
+    }
+    lastKey = key;
+    if (REDUCED) draw(0, performance.now());
+  }
+
+  function setWeather(code, sunriseIso, sunsetIso) {
+    if (FORCE_W == null) state.code = code;
+    var sr = minutesOf(sunriseIso), ss = minutesOf(sunsetIso);
+    if (sr != null && ss != null && ss > sr) { state.sunrise = sr; state.sunset = ss; }
+    update(true);
+  }
+
+  function start() {
+    W = 0;
+    update(false);
+    resize();
+    if (!REDUCED) { running = true; requestAnimationFrame(frame); }
+    else draw(0, performance.now());
+    setInterval(function () { update(false); }, 60 * 1000);       // 空の色は1分ごと
+    setInterval(function () { buildScene(); }, 5 * 60 * 1000);     // 雲の色は5分ごと
+    var rt; addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(resize, 200); });
+    document.addEventListener("visibilitychange", function () {
+      running = document.visibilityState === "visible" && !REDUCED;
+      if (running) { last = performance.now(); requestAnimationFrame(frame); }
+    });
+  }
+
+  return { start: start, setWeather: setWeather };
+})();
+Sky.start();
+</script>
 
 <script>
 (function () {
@@ -344,7 +749,6 @@ body.night .glow { opacity: 0.15; }
       default: return { label: "—", icon: svg(cloud(0)), tone: "cloud" };
     }
   }
-  var GLOW = { clear: "#1e6bff", cloud: "#3a4a66", rain: "#0f6f8f", snow: "#6f8fb8", storm: "#4b2f8f", night: "#2a2a8a" };
 
   // ===== 位置情報 =====
   function getPosition() {
@@ -366,7 +770,7 @@ body.night .glow { opacity: 0.15; }
     return "https://api.open-meteo.com/v1/forecast?latitude=" + pos.lat + "&longitude=" + pos.lon +
       "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,is_day" +
       "&hourly=temperature_2m,weather_code,precipitation_probability,is_day" +
-      "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
+      "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset" +
       "&timezone=auto&forecast_days=4";
   }
 
@@ -408,7 +812,7 @@ body.night .glow { opacity: 0.15; }
     var dl = d.daily;
     $("condMeta").innerHTML = "<span>最高 " + round(dl.temperature_2m_max[0]) + "° / 最低 " + round(dl.temperature_2m_min[0]) +
       "°</span><span>体感 " + round(c.apparent_temperature) + "°・湿度 " + round(c.relative_humidity_2m) + "%</span>";
-    document.documentElement.style.setProperty("--glow", GLOW[info.tone] || GLOW.cloud);
+    Sky.setWeather(c.weather_code, dl.sunrise ? dl.sunrise[0] : null, dl.sunset ? dl.sunset[0] : null);
 
     // 時間ごとの予報（次の時刻から5つ）
     var h = d.hourly, nowKey = c.time.slice(0, 13), start = 0;
