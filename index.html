@@ -159,6 +159,7 @@ body.night .app { opacity: 0.55; filter: saturate(0.6); }
 .now .icon svg { width: min(10vw, 22vh); height: min(10vw, 22vh); display: block; }
 .cond { display: flex; flex-direction: column; gap: 0.3vh; }
 .cond .label { font-size: clamp(13px, 4.6vh, 22px); font-weight: 600; }
+.cond .meta span { white-space: nowrap; }
 .cond .meta {
   display: flex; flex-wrap: wrap; gap: 0 0.9em;
   font-size: clamp(11px, 3.5vh, 16px);
@@ -258,15 +259,19 @@ body.night .app { opacity: 0.55; filter: saturate(0.6); }
 <div class="toast" id="toast" role="status"></div>
 
 <script>
-/* ===== 背景の空（時間帯 × 天気）=====
-   時間帯は日の出・日の入りの時刻から決める。天気はWMO天気コードを7種類にまとめる。
-   確認用：URL末尾に ?t=17:00&w=3 のように付けると、その時刻と天気コードで背景を表示する。 */
+/* ===== 背景の空（時間帯 × 天気 × 風）=====
+   時間帯は日の出・日の入りの時刻から決める。天気はWMO天気コードを10種類にまとめる。
+   風速・風向・突風で雲の流れる速さと向き、雨や雪の傾きが変わる。雨の強さは降水量で変わる。
+   確認用：URL末尾に ?t=17:00&w=3&ws=10&wd=270 のように付けると、
+   その時刻・天気コード・風速(m/s)・風向(度)で背景を表示する。 */
 var Sky = (function () {
   "use strict";
 
   var params = new URLSearchParams(location.search);
   var FORCE_T = params.get("t");                 // "HH:MM"
   var FORCE_W = params.has("w") ? +params.get("w") : null;
+  var FORCE_WS = params.has("ws") ? +params.get("ws") : null;
+  var FORCE_WD = params.has("wd") ? +params.get("wd") : null;
   var REDUCED = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // ---------- 色ユーティリティ ----------
@@ -274,6 +279,7 @@ var Sky = (function () {
   function mix(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
   function rgba(c, a) { return "rgba(" + (c[0] | 0) + "," + (c[1] | 0) + "," + (c[2] | 0) + "," + (a == null ? 1 : a) + ")"; }
   function lum(c) { return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; }
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
   // ---------- 時間帯のキーフレーム（晴天時の空）----------
   // ref: S=日の出, E=日の入り, N=南中（その中間） / m: 基準からの分
@@ -296,18 +302,18 @@ var Sky = (function () {
   });
 
   // ---------- 天気の種類 ----------
-  // cover: 雲の量 / grey: 空の灰色化 / dark: 暗さ(1=そのまま) / precip: 降水
+  // cover: 雲の量 / grey: 空の灰色化 / dark: 暗さ(1=そのまま) / precip: 降水 / amount: 雨粒・雪の量（目安）
   var KINDS = {
     clear:   { cover: 0,    grey: 0,    dark: 1,    clouds: 0,  precip: null },
-    few:     { cover: 0.15, grey: 0.04, dark: 1,    clouds: 3,  precip: null },
-    partly:  { cover: 0.4,  grey: 0.12, dark: 0.98, clouds: 6,  precip: null },
-    overcast:{ cover: 0.9,  grey: 0.55, dark: 0.88, clouds: 11, precip: null },
-    fog:     { cover: 0.7,  grey: 0.7,  dark: 0.9,  clouds: 3,  precip: "fog" },
-    drizzle: { cover: 0.95, grey: 0.62, dark: 0.78, clouds: 11, precip: "rain", amount: 70 },
-    rain:    { cover: 1,    grey: 0.66, dark: 0.72, clouds: 12, precip: "rain", amount: 150 },
-    heavy:   { cover: 1,    grey: 0.72, dark: 0.6,  clouds: 13, precip: "rain", amount: 280 },
-    snow:    { cover: 0.95, grey: 0.7,  dark: 0.9,  clouds: 11, precip: "snow", amount: 140 },
-    storm:   { cover: 1,    grey: 0.75, dark: 0.5,  clouds: 13, precip: "rain", amount: 260, bolt: true }
+    few:     { cover: 0.15, grey: 0.04, dark: 1,    clouds: 4,  precip: null },
+    partly:  { cover: 0.4,  grey: 0.12, dark: 0.98, clouds: 8,  precip: null },
+    overcast:{ cover: 0.9,  grey: 0.55, dark: 0.88, clouds: 14, precip: null },
+    fog:     { cover: 0.7,  grey: 0.7,  dark: 0.9,  clouds: 4,  precip: "fog" },
+    drizzle: { cover: 0.95, grey: 0.62, dark: 0.76, clouds: 14, precip: "rain", amount: 160, rate: 1 },
+    rain:    { cover: 1,    grey: 0.66, dark: 0.68, clouds: 15, precip: "rain", amount: 320, rate: 4 },
+    heavy:   { cover: 1,    grey: 0.72, dark: 0.56, clouds: 16, precip: "rain", amount: 520, rate: 12 },
+    snow:    { cover: 0.95, grey: 0.7,  dark: 0.9,  clouds: 14, precip: "snow", amount: 220, rate: 2 },
+    storm:   { cover: 1,    grey: 0.75, dark: 0.46, clouds: 16, precip: "rain", amount: 460, rate: 10, bolt: true }
   };
   function kindOf(code) {
     if (code === 0) return "clear";
@@ -325,7 +331,10 @@ var Sky = (function () {
   }
 
   // ---------- 状態 ----------
-  var state = { code: FORCE_W != null ? FORCE_W : 0, sunrise: 6 * 60, sunset: 17 * 60 + 30, pal: null, kind: KINDS.clear };
+  var state = {
+    code: FORCE_W != null ? FORCE_W : 0, sunrise: 6 * 60, sunset: 17 * 60 + 30, pal: null, kind: KINDS.clear,
+    ws: FORCE_WS != null ? FORCE_WS : 2, wd: FORCE_WD != null ? FORCE_WD : 270, gust: null, rate: null
+  };
 
   function minutesOf(iso) { // "2026-11-09T06:12" → 372
     if (!iso) return null;
@@ -390,13 +399,13 @@ var Sky = (function () {
     return { x: 0.1 + 0.8 * c, y: 0.92 - 0.78 * Math.sin(Math.PI * Math.max(0, Math.min(1, c))) };
   }
 
-  // ---------- 空のグラデーション（2枚を交互にフェード）----------
+  // ---------- 空のグラデーション ----------
   var gradA = document.getElementById("skyA"), gradB = document.getElementById("skyB");
   function gradCss(p) {
     return "linear-gradient(180deg," + rgba(p.top) + " 0%," + rgba(p.mid) + " 58%," + rgba(p.bot) + " 100%)";
   }
   // 下の層(A)が常に今の空。天気が変わった時だけ上の層(B)に新しい空を描いてフェードインし、終わったらAへ移す
-  var fadeTimer = null;
+  var fadeTimer = null, pendingCss = "";
   function paintGradient(p, fade) {
     var css = gradCss(p);
     if (!fade || REDUCED) { if (!fadeTimer) gradA.style.background = css; else pendingCss = css; return; }
@@ -411,9 +420,36 @@ var Sky = (function () {
       fadeTimer = null;
     }, 3100);
   }
-  var pendingCss = "";
 
-  // ---------- キャンバス（雲・雨・雪・星・光）----------
+  // ---------- 風 ----------
+  // 風向は「吹いてくる方向」。画面の右を東として、雲は風下へ流れる。
+  // 南北の風でも止まって見えないように、横方向の成分は最低でも半分残す。
+  var wind = { dir: 1, base: 0, gustFactor: 1, gust: 0, gustT: 0, gustNext: 0, gustLen: 3 };
+  function setupWind() {
+    var to = (state.wd + 180) * Math.PI / 180;
+    var east = Math.sin(to);
+    wind.dir = east >= 0 ? 1 : -1;
+    var lateral = 0.5 + 0.5 * Math.abs(east);
+    // 風速(m/s) → 雲の速さ(画面px/秒)。そよ風でゆっくり、強風でぐんぐん流れる
+    wind.base = (6 + state.ws * 7) * lateral;
+    // 突風の強さ：最大瞬間風速と平均風速の差
+    var g = state.gust != null ? state.gust : state.ws * 1.5;
+    wind.gustFactor = 1 + clamp((g - state.ws) / Math.max(2, state.ws), 0, 1.5);
+  }
+  // 突風：数秒おきに一時的に強まって、ゆっくり戻る
+  function gustNow(now) {
+    if (now > wind.gustNext) {
+      wind.gustT = now; wind.gustLen = rand(2500, 4500);
+      wind.gustNext = now + rand(5000, 12000) / Math.max(1, state.ws / 6);
+    }
+    var e = (now - wind.gustT) / wind.gustLen;
+    if (e < 0 || e > 1) return 1;
+    var env = e < 0.3 ? e / 0.3 : 1 - (e - 0.3) / 0.7;
+    env = env * env * (3 - 2 * env);
+    return 1 + (wind.gustFactor - 1) * env;
+  }
+
+  // ---------- キャンバス（雲・雨・雪・星・光・雷）----------
   var cv = document.getElementById("fx"), ctx = cv.getContext("2d");
   var W = 0, H = 0, SCALE = Math.min(window.devicePixelRatio || 1, 1.5);
   function resize() {
@@ -465,14 +501,24 @@ var Sky = (function () {
     return c;
   }
 
-  var clouds = [], drops = [], flakes = [], stars = [], fogs = [], flash = 0, nextBolt = 0, sun = { x: 0.5, y: 0.3 };
+  var clouds = [], drops = [], splashes = [], flakes = [], stars = [], fogs = [], sun = { x: 0.5, y: 0.3 };
+  var storm = { next: 0, bolt: null, flash: 0, glowX: 0.5, first: true };
+
+  // 雨の量：天気コードの目安に、実際の降水量(mm/時)を掛け合わせる
+  function precipAmount(kd) {
+    if (!kd.amount) return 0;
+    var k = 1;
+    if (state.rate != null && kd.rate) k = clamp(0.55 + 0.45 * Math.sqrt(state.rate / kd.rate), 0.55, 1.8);
+    return Math.round(kd.amount * k * (W * H) / (1104 * 621));
+  }
 
   function buildScene() {
     if (!state.pal || !W) return;
     var p = state.pal, kd = p.kd;
     sun = sunPos(nowMinutes());
+    setupWind();
 
-    // 雲：奥・中・手前の3層。曇り・雨は大きな雲で空をおおう
+    // 雲：奥・中・手前の3層。手前ほど大きく速い（遠近感）。曇り・雨は大きな雲で空をおおう
     clouds = [];
     var n = kd.clouds;
     for (var i = 0; i < n; i++) {
@@ -480,16 +526,16 @@ var Sky = (function () {
       var big = kd.cover > 0.6;
       var w = W * (big ? rand(0.55, 1.0) : rand(0.28, 0.5)) * (0.75 + layer * 0.15);
       var h = w * rand(0.32, 0.45);
-      var spr = cloudSprite(w, h, p, sun.x, big ? 26 : 18);
       clouds.push({
-        img: spr, w: w, h: h,
-        x: rand(-w * 0.5, W),
-        y: (big ? rand(-0.2, 0.55) : rand(0.02, 0.5)) * H - h * 0.3 + layer * H * 0.04,
-        v: (4 + layer * 4) * SCALE * rand(0.8, 1.2),       // 1秒あたりの移動量
-        a: big ? rand(0.75, 0.95) : rand(0.8, 1)
+        img: cloudSprite(w, h, p, sun.x, big ? 26 : 18), w: w, h: h,
+        x: rand(-w, W),
+        y0: (big ? rand(-0.2, 0.55) : rand(0.02, 0.5)) * H - h * 0.3 + layer * H * 0.04,
+        k: [0.55, 1, 1.6][layer] * rand(0.85, 1.15),       // 層ごとの速さの倍率
+        a: big ? rand(0.75, 0.95) : rand(0.8, 1),
+        bob: rand(0, 6.28)
       });
     }
-    clouds.sort(function (a, b) { return a.v - b.v; });
+    clouds.sort(function (a, b) { return a.k - b.k; });
 
     // 星
     stars = [];
@@ -498,24 +544,56 @@ var Sky = (function () {
     }
 
     // 雨・雪
-    drops = []; flakes = [];
-    var amount = kd.amount ? Math.round(kd.amount * (W * H) / (1104 * 621)) : 0;
+    drops = []; splashes = []; flakes = [];
+    var amount = precipAmount(kd);
     if (kd.precip === "rain") for (var d = 0; d < amount; d++) drops.push(newDrop(true));
     if (kd.precip === "snow") for (var f = 0; f < amount; f++) flakes.push(newFlake(true));
 
     // 霧
     fogs = [];
-    if (kd.precip === "fog") for (var k = 0; k < 6; k++) fogs.push({ y: H * rand(0.25, 0.95), h: H * rand(0.18, 0.35), x: rand(0, W), v: rand(5, 12) * SCALE, a: rand(0.25, 0.45) });
+    if (kd.precip === "fog") for (var k = 0; k < 6; k++) fogs.push({ y: H * rand(0.25, 0.95), h: H * rand(0.18, 0.35), x: rand(0, W), k: rand(0.6, 1.4), a: rand(0.25, 0.45) });
 
-    nextBolt = performance.now() + rand(4000, 9000);
+    storm.next = performance.now() + rand(1000, 2500);     // 開いてすぐに最初の稲妻
+    storm.bolt = null; storm.flash = 0; storm.first = true;
   }
+
+  // 雨粒：奥の細い雨と手前の太い雨の2層
   function newDrop(anyY) {
-    var z = Math.random();
-    return { x: rand(-W * 0.1, W), y: anyY ? rand(-H, H) : rand(-H * 0.3, -10), l: (10 + z * 18) * SCALE, v: (650 + z * 600) * SCALE, a: 0.18 + z * 0.35, w: (0.7 + z * 0.9) * SCALE };
+    var near = Math.random() < 0.35;
+    var z = near ? rand(0.7, 1) : rand(0, 0.6);
+    return {
+      x: rand(-W * 0.2, W * 1.2), y: anyY ? rand(-H, H) : rand(-H * 0.25, -20),
+      l: (14 + z * 34) * SCALE, v: (700 + z * 900) * SCALE,
+      a: near ? rand(0.45, 0.7) : rand(0.2, 0.38), w: (near ? rand(1.6, 2.4) : rand(0.7, 1.1)) * SCALE,
+      near: near, stop: H * rand(0.82, 1.02)
+    };
   }
   function newFlake(anyY) {
     var z = Math.random();
-    return { x: Math.random() * W, y: anyY ? Math.random() * H : -10, r: (1 + z * 2.6) * SCALE, v: (25 + z * 55) * SCALE, a: 0.5 + z * 0.45, ph: Math.random() * 6.28, sw: rand(0.4, 1.2) };
+    return { x: rand(-W * 0.2, W * 1.2), y: anyY ? Math.random() * H : -10, r: (1 + z * 2.8) * SCALE, v: (30 + z * 60) * SCALE, a: 0.55 + z * 0.4, ph: Math.random() * 6.28, sw: rand(0.4, 1.2), z: z };
+  }
+
+  // 稲妻：上から下へジグザグに伸び、途中で枝分かれする
+  function makeBolt() {
+    var x = W * rand(0.15, 0.85), y = H * rand(0.02, 0.15), segs = [];
+    var endY = H * rand(0.65, 1.0), step = 18 * SCALE;
+    var path = [[x, y]];
+    while (y < endY) {
+      x += rand(-1, 1) * step * 1.3; y += step * rand(0.6, 1.3);
+      path.push([x, y]);
+      if (Math.random() < 0.12 && path.length > 3) { // 枝
+        var bx = x, by = y, br = [[bx, by]], len = Math.floor(rand(3, 8)), dirx = Math.random() < 0.5 ? -1 : 1;
+        for (var i = 0; i < len; i++) { bx += dirx * rand(0.3, 1.2) * step; by += step * rand(0.5, 1); br.push([bx, by]); }
+        segs.push(br);
+      }
+    }
+    segs.unshift(path);
+    return { segs: segs, t0: performance.now(), x: path[0][0] / W, flick: [1, 0.25, 1, 0.55, 0.9, 0.3, 0] };
+  }
+  function strokePath(pts) {
+    ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+    for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.stroke();
   }
 
   // ---------- 描画ループ（最大30fps）----------
@@ -531,6 +609,8 @@ var Sky = (function () {
   function draw(dt, now) {
     var p = state.pal; if (!p) return;
     var kd = p.kd;
+    var g1 = REDUCED ? 1 : gustNow(now);
+    var vx = wind.dir * wind.base * g1 * SCALE;        // 今の風による横の速さ（px/秒）
     ctx.clearRect(0, 0, W, H);
 
     // 星（雲より奥）
@@ -552,59 +632,126 @@ var Sky = (function () {
     g.addColorStop(1, rgba(p.glow, 0));
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
 
-    // 雲
+    // 雷：雲の中が光る（稲妻の前に描いて、雲の奥が明るく見えるように）
+    var lit = 0;
+    if (kd.bolt && !REDUCED) {
+      if (!storm.bolt && now > storm.next) {
+        if (storm.first || Math.random() < 0.6) storm.bolt = makeBolt();   // 稲妻あり
+        else { storm.flash = 0.7; storm.glowX = rand(0.1, 0.9); }   // 遠くの雷（雲が光るだけ）
+        storm.first = false;
+        storm.next = now + rand(3500, 11000);
+      }
+      if (storm.bolt) {
+        var age = (now - storm.bolt.t0) / 60;                       // 60msごとに明滅
+        var fi = Math.floor(age);
+        if (fi >= storm.bolt.flick.length) { storm.bolt = null; }
+        else { lit = storm.bolt.flick[fi]; storm.glowX = storm.bolt.x; }
+      }
+      if (storm.flash > 0.02) { lit = Math.max(lit, storm.flash); storm.flash *= 0.8; }
+      if (lit > 0) {
+        var cg = ctx.createRadialGradient(storm.glowX * W, H * 0.15, 0, storm.glowX * W, H * 0.15, W * 0.7);
+        cg.addColorStop(0, "rgba(225,232,255," + (0.75 * lit) + ")");
+        cg.addColorStop(1, "rgba(225,232,255,0)");
+        ctx.fillStyle = cg; ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    // 雲：風で流れる。手前の層ほど速い。ゆっくり上下にもゆらぐ
     for (var c = 0; c < clouds.length; c++) {
       var cl = clouds[c];
-      cl.x += cl.v * dt;
-      if (cl.x > W) cl.x = -cl.w;
+      cl.x += vx * cl.k * dt;
+      if (vx >= 0 && cl.x > W) { cl.x = -cl.w - rand(0, W * 0.2); }
+      if (vx < 0 && cl.x < -cl.w) { cl.x = W + rand(0, W * 0.2); }
+      var y = cl.y0 + Math.sin(now / 9000 + cl.bob) * 4 * SCALE;
       ctx.globalAlpha = cl.a;
-      ctx.drawImage(cl.img, cl.x, cl.y, cl.w, cl.h);
+      ctx.drawImage(cl.img, cl.x, y, cl.w, cl.h);
+      if (lit > 0) { // 雷で雲が照らされる
+        ctx.globalAlpha = cl.a * lit * 0.35;
+        ctx.globalCompositeOperation = "lighter";
+        ctx.drawImage(cl.img, cl.x, y, cl.w, cl.h);
+        ctx.globalCompositeOperation = "source-over";
+      }
     }
     ctx.globalAlpha = 1;
 
-    // 霧
+    // 稲妻
+    if (storm.bolt && lit > 0) {
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      var passes = [[14, 0.10], [6, 0.25], [2.2, 0.95]];   // 外側のにじみ → 芯
+      for (var q = 0; q < passes.length; q++) {
+        ctx.strokeStyle = q === 2 ? "rgba(255,255,255," + lit + ")" : "rgba(190,205,255," + (passes[q][1] * lit) + ")";
+        for (var b = 0; b < storm.bolt.segs.length; b++) {
+          ctx.lineWidth = passes[q][0] * SCALE * (b === 0 ? 1 : 0.55);
+          strokePath(storm.bolt.segs[b]);
+        }
+      }
+      // 画面全体も一瞬明るく
+      ctx.fillStyle = "rgba(220,230,255," + (0.22 * lit) + ")"; ctx.fillRect(0, 0, W, H);
+    } else if (lit > 0) {
+      ctx.fillStyle = "rgba(220,230,255," + (0.18 * lit) + ")"; ctx.fillRect(0, 0, W, H);
+    }
+
+    // 霧：風で横に流れる
     for (var f = 0; f < fogs.length; f++) {
       var fg = fogs[f];
-      fg.x += fg.v * dt; if (fg.x > W) fg.x -= W * 2;
+      fg.x += vx * 0.35 * fg.k * dt;
+      if (fg.x > W * 2) fg.x -= W * 2; if (fg.x < 0) fg.x += W * 2;
       var lg = ctx.createLinearGradient(0, fg.y - fg.h / 2, 0, fg.y + fg.h / 2);
       lg.addColorStop(0, rgba(p.cl, 0)); lg.addColorStop(0.5, rgba(p.cl, fg.a)); lg.addColorStop(1, rgba(p.cl, 0));
       ctx.fillStyle = lg;
-      ctx.fillRect(fg.x - W, fg.y - fg.h / 2, W * 2, fg.h);
+      ctx.fillRect(fg.x - W * 2, fg.y - fg.h / 2, W * 4, fg.h);
     }
 
-    // 雨
+    // 雨：風が強いほど斜めに降る。手前の雨粒は下で跳ねる（奥と手前で1回ずつまとめて描いて軽くする）
     if (drops.length) {
-      ctx.strokeStyle = "rgb(205,222,245)"; ctx.lineCap = "round";
+      var tilt = clamp((vx / SCALE) / 260, -0.75, 0.75);    // 横の流れ（落ちる速さに対する割合）
+      ctx.lineCap = "round";
       for (var d = 0; d < drops.length; d++) {
         var r = drops[d];
-        r.y += r.v * dt; r.x += r.v * dt * 0.12;
-        if (r.y > H + r.l) { drops[d] = newDrop(false); continue; }
-        ctx.globalAlpha = r.a; ctx.lineWidth = r.w;
-        ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(r.x - r.l * 0.12, r.y - r.l); ctx.stroke();
+        r.y += r.v * dt; r.x += r.v * tilt * dt;
+        if (r.y > r.stop) {
+          if (r.near && splashes.length < 80) splashes.push({ x: r.x, y: r.y, t: 0, s: r.w });
+          drops[d] = newDrop(false);
+          drops[d].x -= H * tilt * 0.8;                     // 斜めに流れる分、風上側から降らせる
+        }
+      }
+      for (var layer = 0; layer < 2; layer++) {
+        var nearL = layer === 1;
+        ctx.strokeStyle = nearL ? "rgba(225,236,255,0.62)" : "rgba(200,216,240,0.32)";
+        ctx.lineWidth = (nearL ? 2 : 0.9) * SCALE;
+        ctx.beginPath();
+        for (var e = 0; e < drops.length; e++) {
+          var q2 = drops[e];
+          if (q2.near !== nearL) continue;
+          ctx.moveTo(q2.x, q2.y); ctx.lineTo(q2.x - q2.l * tilt, q2.y - q2.l);
+        }
+        ctx.stroke();
+      }
+      // しぶき：小さな輪が広がって消える
+      ctx.strokeStyle = "rgba(225,236,255,0.5)"; ctx.lineWidth = 1 * SCALE;
+      for (var sp = splashes.length - 1; sp >= 0; sp--) {
+        var sh = splashes[sp];
+        sh.t += dt;
+        if (sh.t > 0.25) { splashes.splice(sp, 1); continue; }
+        var rr = (2 + sh.t * 40) * SCALE * (sh.s / SCALE / 2);
+        ctx.globalAlpha = 1 - sh.t / 0.25;
+        ctx.beginPath(); ctx.ellipse(sh.x, sh.y, rr, rr * 0.3, 0, Math.PI, 2 * Math.PI); ctx.stroke();
       }
       ctx.globalAlpha = 1;
     }
 
-    // 雪
+    // 雪：風に流されながら、ゆらゆら落ちる
     if (flakes.length) {
       ctx.fillStyle = "#ffffff";
       for (var k = 0; k < flakes.length; k++) {
         var fl = flakes[k];
-        fl.y += fl.v * dt; fl.x += Math.sin(now / 1000 * fl.sw + fl.ph) * 12 * SCALE * dt;
-        if (fl.y > H + 5) { flakes[k] = newFlake(false); continue; }
+        fl.y += fl.v * dt;
+        fl.x += (vx * (0.5 + fl.z * 0.7) + Math.sin(now / 1000 * fl.sw + fl.ph) * 14 * SCALE) * dt;
+        if (fl.y > H + 5 || fl.x > W * 1.25 || fl.x < -W * 0.25) { flakes[k] = newFlake(false); if (vx > 0) flakes[k].x -= W * 0.2; else flakes[k].x += W * 0.2; continue; }
         ctx.globalAlpha = fl.a;
         ctx.beginPath(); ctx.arc(fl.x, fl.y, fl.r, 0, 6.283); ctx.fill();
       }
       ctx.globalAlpha = 1;
-    }
-
-    // 雷
-    if (kd.bolt && !REDUCED) {
-      if (now > nextBolt) { flash = 1; nextBolt = now + rand(5000, 14000); if (Math.random() < 0.5) setTimeout(function () { flash = 0.8; }, 180); }
-      if (flash > 0.01) {
-        ctx.fillStyle = "rgba(220,230,255," + (flash * 0.55) + ")"; ctx.fillRect(0, 0, W, H);
-        flash *= 0.82;
-      }
     }
   }
 
@@ -622,18 +769,22 @@ var Sky = (function () {
     var bright = lum(pal.mid) / 255;
     document.documentElement.style.setProperty("--scrim", (0.05 + bright * 0.22).toFixed(3));
     if (force || kindChanged) buildScene();
-    else {
-      // 時間の変化で雲の色・太陽の位置を少しずつ合わせる（5分ごとに作り直す）
-      var p = sunPos(t); sun = p;
-    }
+    else sun = sunPos(t);
     lastKey = key;
     if (REDUCED) draw(0, performance.now());
   }
 
-  function setWeather(code, sunriseIso, sunsetIso) {
+  // w: { speed: 風速m/s, dir: 風向(度), gust: 最大瞬間風速m/s, precip: 直前15分の降水量mm }
+  function setWeather(code, sunriseIso, sunsetIso, w) {
     if (FORCE_W == null) state.code = code;
     var sr = minutesOf(sunriseIso), ss = minutesOf(sunsetIso);
     if (sr != null && ss != null && ss > sr) { state.sunrise = sr; state.sunset = ss; }
+    if (w) {
+      if (FORCE_WS == null && w.speed != null) state.ws = w.speed;
+      if (FORCE_WD == null && w.dir != null) state.wd = w.dir;
+      state.gust = FORCE_WS == null && w.gust != null ? w.gust : null;
+      state.rate = FORCE_W == null && w.precip != null ? w.precip * 4 : null;   // 15分の量 → 1時間あたり
+    }
     update(true);
   }
 
@@ -768,10 +919,11 @@ Sky.start();
   // ===== 天気の取得 =====
   function apiUrl(pos) {
     return "https://api.open-meteo.com/v1/forecast?latitude=" + pos.lat + "&longitude=" + pos.lon +
-      "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,is_day" +
+      "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,is_day," +
+      "wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation" +
       "&hourly=temperature_2m,weather_code,precipitation_probability,is_day" +
       "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset" +
-      "&timezone=auto&forecast_days=4";
+      "&wind_speed_unit=ms&timezone=auto&forecast_days=4";
   }
 
   var lastFetch = 0, loading = false;
@@ -800,6 +952,10 @@ Sky.start();
     }).then(function () { loading = false; });
   }
 
+  // 風向（度）→ 16方位
+  var DIRS = ["北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東", "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西"];
+  function windLabel(deg) { return deg == null ? "" : DIRS[Math.round(((deg % 360) + 360) % 360 / 22.5) % 16]; }
+
   function render(d, stale) {
     var c = d.current;
     var info = weatherInfo(c.weather_code, c.is_day);
@@ -811,8 +967,10 @@ Sky.start();
     $("condLabel").textContent = info.label;
     var dl = d.daily;
     $("condMeta").innerHTML = "<span>最高 " + round(dl.temperature_2m_max[0]) + "° / 最低 " + round(dl.temperature_2m_min[0]) +
-      "°</span><span>体感 " + round(c.apparent_temperature) + "°・湿度 " + round(c.relative_humidity_2m) + "%</span>";
-    Sky.setWeather(c.weather_code, dl.sunrise ? dl.sunrise[0] : null, dl.sunset ? dl.sunset[0] : null);
+      "°</span><span>体感 " + round(c.apparent_temperature) + "°・湿度 " + round(c.relative_humidity_2m) + "%</span>" +
+      (c.wind_speed_10m != null ? "<span>" + windLabel(c.wind_direction_10m) + "の風 " + round(c.wind_speed_10m) + "m/s</span>" : "");
+    Sky.setWeather(c.weather_code, dl.sunrise ? dl.sunrise[0] : null, dl.sunset ? dl.sunset[0] : null,
+      { speed: c.wind_speed_10m, dir: c.wind_direction_10m, gust: c.wind_gusts_10m, precip: c.precipitation });
 
     // 時間ごとの予報（次の時刻から5つ）
     var h = d.hourly, nowKey = c.time.slice(0, 13), start = 0;
