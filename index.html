@@ -272,7 +272,10 @@ var Sky = (function () {
   var FORCE_W = params.has("w") ? +params.get("w") : null;
   var FORCE_WS = params.has("ws") ? +params.get("ws") : null;
   var FORCE_WD = params.has("wd") ? +params.get("wd") : null;
+  // iPhoneの「視差効果を減らす」がオンでも背景は動かす（時計として常に表示する端末のため）。
+  // その場合は、まぶしさにつながる稲妻の光だけを弱める。
   var REDUCED = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var FLASH = REDUCED ? 0.35 : 1;
 
   // ---------- 色ユーティリティ ----------
   function hex(h) { h = h.replace("#", ""); return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]; }
@@ -609,7 +612,7 @@ var Sky = (function () {
   function draw(dt, now) {
     var p = state.pal; if (!p) return;
     var kd = p.kd;
-    var g1 = REDUCED ? 1 : gustNow(now);
+    var g1 = gustNow(now);
     var vx = wind.dir * wind.base * g1 * SCALE;        // 今の風による横の速さ（px/秒）
     ctx.clearRect(0, 0, W, H);
 
@@ -634,7 +637,7 @@ var Sky = (function () {
 
     // 雷：雲の中が光る（稲妻の前に描いて、雲の奥が明るく見えるように）
     var lit = 0;
-    if (kd.bolt && !REDUCED) {
+    if (kd.bolt) {
       if (!storm.bolt && now > storm.next) {
         if (storm.first || Math.random() < 0.6) storm.bolt = makeBolt();   // 稲妻あり
         else { storm.flash = 0.7; storm.glowX = rand(0.1, 0.9); }   // 遠くの雷（雲が光るだけ）
@@ -648,6 +651,7 @@ var Sky = (function () {
         else { lit = storm.bolt.flick[fi]; storm.glowX = storm.bolt.x; }
       }
       if (storm.flash > 0.02) { lit = Math.max(lit, storm.flash); storm.flash *= 0.8; }
+      lit *= FLASH;
       if (lit > 0) {
         var cg = ctx.createRadialGradient(storm.glowX * W, H * 0.15, 0, storm.glowX * W, H * 0.15, W * 0.7);
         cg.addColorStop(0, "rgba(225,232,255," + (0.75 * lit) + ")");
@@ -771,7 +775,6 @@ var Sky = (function () {
     if (force || kindChanged) buildScene();
     else sun = sunPos(t);
     lastKey = key;
-    if (REDUCED) draw(0, performance.now());
   }
 
   // w: { speed: 風速m/s, dir: 風向(度), gust: 最大瞬間風速m/s, precip: 直前15分の降水量mm }
@@ -792,13 +795,12 @@ var Sky = (function () {
     W = 0;
     update(false);
     resize();
-    if (!REDUCED) { running = true; requestAnimationFrame(frame); }
-    else draw(0, performance.now());
+    running = true; requestAnimationFrame(frame);
     setInterval(function () { update(false); }, 60 * 1000);       // 空の色は1分ごと
     setInterval(function () { buildScene(); }, 5 * 60 * 1000);     // 雲の色は5分ごと
     var rt; addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(resize, 200); });
     document.addEventListener("visibilitychange", function () {
-      running = document.visibilityState === "visible" && !REDUCED;
+      running = document.visibilityState === "visible";
       if (running) { last = performance.now(); requestAnimationFrame(frame); }
     });
   }
