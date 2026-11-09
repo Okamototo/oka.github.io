@@ -166,13 +166,31 @@ body.night .app { opacity: 0.55; filter: saturate(0.6); }
   color: var(--fg-2);
   font-variant-numeric: tabular-nums;
 }
+/* 1時間ごとの予報：見える幅は5時間分のまま、横にスクロールして24時間先まで見られる */
 .hours {
-  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+  display: grid; grid-auto-flow: column; grid-auto-columns: 20%;
   border-top: 1px solid var(--card-line);
-  padding-top: 2.2vh;
+  padding-top: 2.9vh;
   text-align: center;
+  overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+  scrollbar-width: none;
+  /* 右端を少しぼかして「続きがある」ことを示す（最後まで送ると消える） */
+  -webkit-mask-image: linear-gradient(to right, #000 86%, transparent);
+  mask-image: linear-gradient(to right, #000 86%, transparent);
 }
-.hour { display: flex; flex-direction: column; align-items: center; gap: 0.6vh; min-width: 0; }
+.hours::-webkit-scrollbar { display: none; }
+.hours.at-end { -webkit-mask-image: none; mask-image: none; }
+.hour { display: flex; flex-direction: column; align-items: center; gap: 0.6vh; min-width: 0; scroll-snap-align: start; }
+.hour .h { white-space: nowrap; }
+.hour.newday { position: relative; box-shadow: inset 1px 0 0 var(--card-line); }
+.hour.newday::before {
+  content: "明日"; position: absolute; top: -2.4vh; left: 4px;
+  font-size: clamp(8px, 2.1vh, 10px); line-height: 1; font-weight: 600; color: var(--fg-3);
+}
 .hour .h { font-size: clamp(10px, 3.2vh, 14px); color: var(--fg-2); font-weight: 600; font-variant-numeric: tabular-nums; }
 .hour svg { width: min(4.6vw, 9.5vh); height: min(4.6vw, 9.5vh); }
 .hour .t { font-family: var(--font-num); font-size: clamp(12px, 4vh, 18px); font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -974,17 +992,20 @@ Sky.start();
     Sky.setWeather(c.weather_code, dl.sunrise ? dl.sunrise[0] : null, dl.sunset ? dl.sunset[0] : null,
       { speed: c.wind_speed_10m, dir: c.wind_direction_10m, gust: c.wind_gusts_10m, precip: c.precipitation });
 
-    // 時間ごとの予報（次の時刻から5つ）
+    // 時間ごとの予報（次の時刻から24時間分。見えるのは5つで、横スクロールで先を見る）
     var h = d.hourly, nowKey = c.time.slice(0, 13), start = 0;
     for (var i = 0; i < h.time.length; i++) { if (h.time[i].slice(0, 13) === nowKey) { start = i + 1; break; } }
     var html = "";
-    for (var j = start; j < Math.min(start + 5, h.time.length); j++) {
+    for (var j = start; j < Math.min(start + 24, h.time.length); j++) {
       var hi = weatherInfo(h.weather_code[j], h.is_day[j]);
       var pp = h.precipitation_probability ? h.precipitation_probability[j] : null;
-      html += "<div class='hour'><div class='h'>" + parseInt(h.time[j].slice(11, 13), 10) + "時</div>" + hi.icon +
+      var hr = parseInt(h.time[j].slice(11, 13), 10);
+      var newDay = hr === 0 && j !== start;                    // 日付が変わる所に区切り線と「明日」
+      html += "<div class='hour" + (newDay ? " newday" : "") + "'><div class='h'>" + hr + "時" + "</div>" + hi.icon +
         "<div class='t'>" + round(h.temperature_2m[j]) + "°</div><div class='p'>" + (pp != null && pp >= 20 ? pp + "%" : "") + "</div></div>";
     }
     $("hours").innerHTML = html;
+    updateHoursEdge();
 
     // 明日から3日間
     var dhtml = "";
@@ -1034,7 +1055,24 @@ Sky.start();
       if (Date.now() - lastFetch > 10 * 60 * 1000) refresh(true);
     }
   });
-  document.addEventListener("click", function () {
+  // 1時間ごとの予報の横スクロール：最後まで送ったら右端のぼかしを消す。
+  // しばらく触らなければ、今の時刻のほうへ自動で戻す（時計として置いておくため）
+  var hoursBackTimer = null;
+  function updateHoursEdge() {
+    var el = $("hours");
+    el.classList.toggle("at-end", el.scrollLeft + el.clientWidth >= el.scrollWidth - 2);
+  }
+  $("hours").addEventListener("scroll", function () {
+    updateHoursEdge();
+    clearTimeout(hoursBackTimer);
+    var el = this;
+    if (el.scrollLeft > 0) hoursBackTimer = setTimeout(function () {
+      try { el.scrollTo({ left: 0, behavior: "smooth" }); } catch (e) { el.scrollLeft = 0; }
+    }, 30 * 1000);
+  }, { passive: true });
+
+  document.addEventListener("click", function (e) {
+    if (e.target && e.target.closest && e.target.closest("#hours")) return;   // 予報の操作中は更新しない
     requestWake();
     toast("天気を更新しています");
     refresh(false);
