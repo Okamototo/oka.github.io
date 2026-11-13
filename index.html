@@ -127,6 +127,25 @@ body.night .app { opacity: 0.55; filter: saturate(0.6); }
 .day .hi { color: var(--fg); font-weight: 600; font-family: var(--font-num); }
 .day .lo { font-family: var(--font-num); color: var(--fg-3); }
 
+/* ---- 今日のニュース：時計の下に5行。長い見出しは「…」で省略 ---- */
+.news { margin-top: 3vh; padding-left: 0.5em; min-width: 0; }
+.news ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.7vh; }
+.news li {
+  display: flex; align-items: baseline; gap: 0.6em; min-width: 0;
+  font-size: clamp(11px, 3.5vh, 15px); line-height: 1.3;
+  animation: news-in 0.8s ease both;
+}
+.news li::before {
+  content: ""; flex: none; width: 0.38em; height: 0.38em; border-radius: 50%;
+  background: var(--fg-3); transform: translateY(-0.15em);
+}
+.news li.fresh::before { background: var(--sun); box-shadow: 0 0 6px var(--sun); }
+.news .nt { flex: none; color: var(--fg-3); font-family: var(--font-num); font-variant-numeric: tabular-nums; font-size: 0.9em; }
+.news .nh { flex: 1 1 auto; min-width: 0; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.news .src { margin-top: 0.8vh; font-size: clamp(9px, 2.6vh, 11px); color: var(--fg-3); }
+.news .empty { color: var(--fg-3); font-size: clamp(11px, 3.4vh, 14px); }
+@keyframes news-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
 /* ---- 右：天気カード ---- */
 .weather {
   align-self: center;
@@ -235,6 +254,7 @@ body.night .app { opacity: 0.55; filter: saturate(0.6); }
 }
 @media (prefers-reduced-motion: reduce) {
   .sky, .sky-grad, .app, .time .colon { transition: none; }
+  .news li { animation: none; }
 }
 </style>
 </head>
@@ -252,6 +272,10 @@ body.night .app { opacity: 0.55; filter: saturate(0.6); }
       <span id="hh">--</span><span class="colon" id="colon">:</span><span id="mm">--</span><span class="sec" id="ss">--</span>
     </div>
     <div class="days" id="days"></div>
+    <div class="news" id="news" aria-label="今日のニュース">
+      <ul id="newsList"><li class="empty">ニュースを読み込んでいます</li></ul>
+      <div class="src" id="newsSrc">ニュース：47NEWS（Bluesky）</div>
+    </div>
   </section>
 
   <section class="weather" aria-label="天気">
@@ -1041,8 +1065,87 @@ Sky.start();
     toastTimer = setTimeout(function () { el.classList.remove("show"); }, 2200);
   }
 
+  // ===== 今日のニュース =====
+  // 47NEWS（共同通信のニュースサイト）の公式Blueskyアカウントの投稿を、5分ごとに読み込む。
+  // 登録やAPIキーは不要。株価・為替の定時速報は除いて、新しい順に5件を表示する。
+  var NEWS_ACCOUNT = "47news.jp";
+  var NEWS_MS = 5 * 60 * 1000;
+  var NEWS_FRESH_MS = 15 * 60 * 1000;                     // 新しく入ったニュースに印を付ける時間
+  var NEWS_SKIP = /^(東京株式|東京外為|東京円|NY株|NY円|ニューヨーク株|日経平均|円相場|株式市況)|\d+日\s*\d+時\d+分/;
+  var newsSeen = store.get("sora.newsSeen") || {};        // 見出し → 初めて見た時刻
+
+  function cleanHeadline(post) {
+    var t = (post.record && post.record.text || "").split("\n")[0].trim();
+    if (!t && post.embed && post.embed.external) t = post.embed.external.title || "";
+    return t.replace(/\s*[-：|｜]\s*(47NEWS|共同通信)\s*$/, "");
+  }
+
+  function renderNews(items) {
+    var ul = $("newsList");
+    if (!items || !items.length) { ul.innerHTML = "<li class='empty'>ニュースを取得できませんでした</li>"; return; }
+    var now = Date.now();
+    var oldKeys = {};
+    [].forEach.call(ul.querySelectorAll("li[data-k]"), function (li) { oldKeys[li.getAttribute("data-k")] = li; });
+    var frag = document.createDocumentFragment();
+    items.forEach(function (it) {
+      var li = oldKeys[it.k];
+      if (!li) {                                           // 新しく入ったニュースだけ作り直す（ふわっと出る）
+        li = document.createElement("li");
+        li.setAttribute("data-k", it.k);
+        var tm = document.createElement("span"); tm.className = "nt";
+        var hd = document.createElement("span"); hd.className = "nh";
+        li.appendChild(tm); li.appendChild(hd);
+      }
+      var d = new Date(it.at);
+      li.querySelector(".nt").textContent = d.getHours() + ":" + pad(d.getMinutes());
+      li.querySelector(".nh").textContent = it.title;
+      li.classList.toggle("fresh", now - (newsSeen[it.k] || 0) < NEWS_FRESH_MS);
+      frag.appendChild(li);
+    });
+    ul.innerHTML = "";
+    ul.appendChild(frag);
+  }
+
+  var newsLoading = false;
+  function refreshNews() {
+    if (newsLoading) return;
+    newsLoading = true;
+    fetch("https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?filter=posts_no_replies&limit=30&actor=" + NEWS_ACCOUNT, { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (j) {
+        var firstLoad = !store.get("sora.news");
+        var items = [], seenTitles = {};
+        (j.feed || []).forEach(function (f) {
+          if (f.reason || items.length >= 5) return;        // 再投稿は除く
+          var title = cleanHeadline(f.post);
+          if (!title || NEWS_SKIP.test(title) || seenTitles[title]) return;
+          seenTitles[title] = 1;
+          items.push({ k: f.post.uri, title: title, at: f.post.record.createdAt });
+        });
+        var now = Date.now(), keep = {};
+        items.forEach(function (it) {
+          keep[it.k] = newsSeen[it.k] || (firstLoad ? now - NEWS_FRESH_MS : now);   // 初回はすべて既読扱い
+        });
+        newsSeen = keep;
+        store.set("sora.newsSeen", newsSeen);
+        store.set("sora.news", items);
+        renderNews(items);
+        $("newsSrc").textContent = "ニュース：47NEWS（Bluesky）・" + new Date().getHours() + ":" + pad(new Date().getMinutes()) + " 確認";
+      })
+      .catch(function () {
+        var c = store.get("sora.news");
+        if (c && c.length) renderNews(c); else renderNews(null);
+        $("newsSrc").textContent = "ニュース：47NEWS（Bluesky）・更新できませんでした";
+      })
+      .then(function () { newsLoading = false; });
+  }
+
   // ===== 起動 =====
   tick();
+  var cachedNews = store.get("sora.news");
+  if (cachedNews && cachedNews.length) renderNews(cachedNews);
+  refreshNews();
+  setInterval(refreshNews, NEWS_MS);
   var cached = store.get("sora.weather");
   if (cached) render(cached, true);
   refresh(true);
@@ -1053,6 +1156,7 @@ Sky.start();
     if (document.visibilityState === "visible") {
       requestWake();
       if (Date.now() - lastFetch > 10 * 60 * 1000) refresh(true);
+      refreshNews();
     }
   });
   // 1時間ごとの予報の横スクロール：最後まで送ったら右端のぼかしを消す。
@@ -1074,8 +1178,9 @@ Sky.start();
   document.addEventListener("click", function (e) {
     if (e.target && e.target.closest && e.target.closest("#hours")) return;   // 予報の操作中は更新しない
     requestWake();
-    toast("天気を更新しています");
+    toast("天気とニュースを更新しています");
     refresh(false);
+    refreshNews();
   });
 })();
 </script>
